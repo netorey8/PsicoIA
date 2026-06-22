@@ -227,8 +227,13 @@ else:
     # ─────────────────────────────────────────────────────────
     # BARRA LATERAL (SIDEBAR DE CONTROLES)
     # ─────────────────────────────────────────────────────────
-    st.sidebar.markdown("<h2 style='color: #7fa99b;'>🌿 PsicoAI Pro</h2>", unsafe_allow_html=True)
-    st.sidebar.caption("Acompañamiento Emocional & Psicoeducación")
+    # Logo
+    logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+    if os.path.exists(logo_path):
+        st.sidebar.image(logo_path, use_container_width=True)
+    else:
+        st.sidebar.markdown("<h2 style='color: #7fa99b; margin-top:0;'>🌿 PsicoAI Pro</h2>", unsafe_allow_html=True)
+        st.sidebar.caption("Acompañamiento Emocional & Psicoeducación")
     
     # 1. Selectores y Parámetros
     st.sidebar.markdown("---")
@@ -249,18 +254,19 @@ else:
     st.session_state.save_profile = st.sidebar.checkbox("Guardar perfil de sesión", value=st.session_state.save_profile, help="Permite a la IA recordar detalles clínicos del paciente en RAM de forma temporal.")
     st.session_state.voice_enabled = st.sidebar.checkbox("🔊 Habilitar voz de Alejandro", value=st.session_state.voice_enabled, help="La IA generará y reproducirá sus respuestas con una voz neuronal.")
 
-    # Carga de Libros
+    # Carga de Libros (dentro de un expander para ahorrar espacio vertical)
     st.sidebar.markdown("---")
-    uploaded_file = st.sidebar.file_uploader("📂 Añadir Libro (PDF/TXT)", type=["pdf", "txt"])
-    if uploaded_file is not None:
-        books_dir = get_books_dir()
-        dest_path = os.path.join(books_dir, uploaded_file.name)
-        if not os.path.exists(dest_path):
-            with open(dest_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            with st.sidebar.spinner("Indexando libro en la base de datos..."):
-                st.session_state.bot.db.load_all_books()
-            st.sidebar.success(f"Libro '{uploaded_file.name}' indexado con éxito.")
+    with st.sidebar.expander("📂 Añadir Libro a la Biblioteca"):
+        uploaded_file = st.sidebar.file_uploader("Subir PDF/TXT", type=["pdf", "txt"])
+        if uploaded_file is not None:
+            books_dir = get_books_dir()
+            dest_path = os.path.join(books_dir, uploaded_file.name)
+            if not os.path.exists(dest_path):
+                with open(dest_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                with st.spinner("Indexando libro..."):
+                    st.session_state.bot.db.load_all_books()
+                st.success(f"Libro '{uploaded_file.name}' indexado con éxito.")
             
     # 2. Medidor de Emociones
     st.sidebar.markdown("---")
