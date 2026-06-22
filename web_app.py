@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import json
 import datetime
@@ -87,6 +88,38 @@ def render_autoplay_audio(audio_bytes):
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="PsicoAI Pro", page_icon="🌿", layout="wide")
 
+# Evitar la traducción automática de Google Chrome, que causa desincronización del DOM de Streamlit/React (error 'removeChild')
+components.html(
+    """
+    <script>
+    try {
+        // Intentar añadir la meta etiqueta al head del iframe
+        var meta1 = document.createElement('meta');
+        meta1.name = "google";
+        meta1.content = "notranslate";
+        document.getElementsByTagName('head')[0].appendChild(meta1);
+        
+        // Intentar añadir la meta etiqueta al head de la página principal (padre)
+        if (window.parent && window.parent.document) {
+            var parentHead = window.parent.document.getElementsByTagName('head')[0];
+            if (parentHead) {
+                var meta2 = window.parent.document.createElement('meta');
+                meta2.name = "google";
+                meta2.content = "notranslate";
+                parentHead.appendChild(meta2);
+            }
+            // Agregar la clase 'notranslate' al body principal
+            window.parent.document.body.classList.add('notranslate');
+        }
+    } catch (e) {
+        console.log("CORS/Seguridad previno inyección directa en el padre. Esto es normal en Streamlit Cloud.");
+    }
+    </script>
+    """,
+    height=0,
+    width=0
+)
+
 # Inicializar sesión y configuraciones
 if "consent_granted" not in st.session_state:
     settings_path = get_settings_path()
@@ -160,17 +193,14 @@ if not st.session_state.consent_granted:
     
     st.text_area("Términos de Privacidad", value=terms_text, height=320, disabled=True)
     
-    st.markdown("---")
+    st.warning("⚠️ **Nota importante sobre el navegador:** Si utilizas el traductor automático de Google Chrome (u otro navegador), esto puede causar errores inesperados en la aplicación (como `removeChild`). Por favor, desactiva la traducción automática para esta página o selecciona **'No traducir nunca este sitio'** para asegurar un funcionamiento correcto.")
     
-    # Campo opcional para ingresar una API Key personalizada
-    custom_key = st.text_input("Clave de API de Groq (Opcional - usa la integrada del sistema si se deja vacía):", type="password", help="Ingresa tu clave de API de Groq en formato gsk_...")
+    st.markdown("---")
     
     col_acc, col_dec = st.columns([1, 1])
     
     if col_acc.button("Aceptar y Continuar", type="primary", use_container_width=True):
         st.session_state.consent_granted = True
-        if custom_key.strip():
-            st.session_state.api_key = custom_key.strip()
         st.session_state.bot.api_key = st.session_state.api_key
         
         # Guardar en settings.json
@@ -371,6 +401,10 @@ else:
         st.session_state.suggested_options = ["Me siento ansioso/a", "Tengo problemas para dormir", "Quiero hablar de una relación", "No sé por dónde empezar"]
         st.session_state.play_audio_bytes = None
         st.rerun()
+
+    # Nota de ayuda sobre traducción automática
+    st.sidebar.markdown("---")
+    st.sidebar.caption("⚠️ **¿Problemas de visualización?** Si la app se detiene con un error 'removeChild', desactiva la traducción automática de Google Chrome u otro navegador para este sitio.")
 
     # ─────────────────────────────────────────────────────────
     # ÁREA PRINCIPAL DE CONTENIDO (CHAT Y NOTAS CLÍNICAS)
