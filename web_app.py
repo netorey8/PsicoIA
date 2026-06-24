@@ -1,14 +1,19 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import os
 import json
 import datetime
 import asyncio
-import edge_tts
 import base64
 import shutil
 import re
 import sys
+
+# Importar edge_tts de forma segura (puede fallar en algunos entornos)
+try:
+    import edge_tts
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
 
 # Make sure imports from current directory work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -87,38 +92,6 @@ def render_autoplay_audio(audio_bytes):
 # CONFIGURACIÓN E INICIALIZACIÓN DE LA PÁGINA
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="PsicoAI Pro", page_icon="🌿", layout="wide")
-
-# Evitar la traducción automática de Google Chrome, que causa desincronización del DOM de Streamlit/React (error 'removeChild')
-components.html(
-    """
-    <script>
-    try {
-        // Intentar añadir la meta etiqueta al head del iframe
-        var meta1 = document.createElement('meta');
-        meta1.name = "google";
-        meta1.content = "notranslate";
-        document.getElementsByTagName('head')[0].appendChild(meta1);
-        
-        // Intentar añadir la meta etiqueta al head de la página principal (padre)
-        if (window.parent && window.parent.document) {
-            var parentHead = window.parent.document.getElementsByTagName('head')[0];
-            if (parentHead) {
-                var meta2 = window.parent.document.createElement('meta');
-                meta2.name = "google";
-                meta2.content = "notranslate";
-                parentHead.appendChild(meta2);
-            }
-            // Agregar la clase 'notranslate' al body principal
-            window.parent.document.body.classList.add('notranslate');
-        }
-    } catch (e) {
-        console.log("CORS/Seguridad previno inyección directa en el padre. Esto es normal en Streamlit Cloud.");
-    }
-    </script>
-    """,
-    height=0,
-    width=0
-)
 
 # Inicializar sesión y configuraciones
 if "consent_granted" not in st.session_state:
@@ -246,7 +219,7 @@ else:
         st.session_state.suggested_options = res.get("opciones_respuesta", [])
         
         # Generar audio si está habilitado
-        if st.session_state.voice_enabled:
+        if st.session_state.voice_enabled and EDGE_TTS_AVAILABLE:
             try:
                 # Ejecutar de forma segura la función asincrónica en streamlit
                 audio_bytes = asyncio.run(get_voice_bytes(respuesta))
@@ -287,7 +260,8 @@ else:
     # Carga de Libros (dentro de un expander para ahorrar espacio vertical)
     st.sidebar.markdown("---")
     with st.sidebar.expander("📂 Añadir Libro a la Biblioteca"):
-        uploaded_file = st.sidebar.file_uploader("Subir PDF/TXT", type=["pdf", "txt"])
+        # IMPORTANTE: usar st.file_uploader (sin prefijo sidebar) dentro de un expander de sidebar
+        uploaded_file = st.file_uploader("Subir PDF/TXT", type=["pdf", "txt"])
         if uploaded_file is not None:
             books_dir = get_books_dir()
             dest_path = os.path.join(books_dir, uploaded_file.name)
