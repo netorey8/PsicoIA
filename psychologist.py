@@ -28,6 +28,9 @@ class BookDatabase:
         print("Cargando base de datos de libros en segundo plano...")
         threading.Thread(target=self.load_all_books, daemon=True).start()
 
+    # Limite de tamano de PDF para evitar OOM en Streamlit Cloud (bytes)
+    MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
     def load_all_books(self):
         new_fragments = []
         if not os.path.exists(self.books_dir):
@@ -36,12 +39,32 @@ class BookDatabase:
             with self._lock:
                 self.fragments = new_fragments
             return
+
+        # Obtener lista de archivos TXT ya existentes (sin extension) para evitar
+        # cargar un PDF si ya existe su version TXT equivalente
+        txt_bases = {
+            os.path.splitext(f)[0].lower()
+            for f in os.listdir(self.books_dir)
+            if f.lower().endswith(".txt")
+        }
+
         for fname in sorted(os.listdir(self.books_dir)):
             fpath = os.path.join(self.books_dir, fname)
-            print(f"Indexando: {fname}...")
             if fname.lower().endswith(".txt"):
                 self._load_txt_into(fpath, fname, new_fragments)
             elif fname.lower().endswith(".pdf"):
+                base_name = os.path.splitext(fname)[0].lower()
+                # Saltar PDF si ya existe su version TXT
+                if base_name in txt_bases:
+                    print(f"  Omitiendo PDF (version TXT disponible): {fname}")
+                    continue
+                # Saltar PDFs demasiado grandes (proteccion contra OOM)
+                file_size = os.path.getsize(fpath)
+                if file_size > self.MAX_PDF_SIZE_BYTES:
+                    size_mb = file_size / (1024 * 1024)
+                    print(f"  Omitiendo PDF demasiado grande ({size_mb:.1f} MB > 5 MB): {fname}")
+                    print(f"  TIP: Convierte este PDF a TXT para cargarlo completo.")
+                    continue
                 self._load_pdf_into(fpath, fname, new_fragments)
         with self._lock:
             self.fragments = new_fragments
@@ -69,12 +92,16 @@ class BookDatabase:
     def _load_pdf(self, path, fname):
         self._load_pdf_into(path, fname, self.fragments)
 
-    def _load_pdf_into(self, path, fname, target_list):
+    def _load_pdf_into(self, path, fname, target_list, max_pages=80):
+        """Carga un PDF limitando el numero de paginas para evitar OOM en entornos con poca RAM."""
         text = ""
         try:
             import pdfplumber
             with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
+                for i, page in enumerate(pdf.pages):
+                    if i >= max_pages:
+                        print(f"  [{fname}] Limite de {max_pages} paginas alcanzado, omitiendo el resto.")
+                        break
                     t = page.extract_text()
                     if t:
                         text += t + "\n"
@@ -83,7 +110,9 @@ class BookDatabase:
                 import PyPDF2
                 with open(path, "rb") as f:
                     reader = PyPDF2.PdfReader(f)
-                    for page in reader.pages:
+                    for i, page in enumerate(reader.pages):
+                        if i >= max_pages:
+                            break
                         t = page.extract_text()
                         if t:
                             text += t + "\n"
