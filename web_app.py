@@ -391,50 +391,114 @@ else:
             process_chat_message(prompt)
             st.rerun()
 
-    # ──── PESTAÑA 2: TEST DE PATRONES EMOCIONALES ────
+    # ──── PESTAÑA 2: TEST DE PATRONES PSICOANALÍTICOS ────
     with tab_test:
-        st.markdown("<h3 style='color: #7fa99b;'>📊 Diagnosticador Profundo de Patrones Emocionales</h3>", unsafe_allow_html=True)
-        st.caption("Responde estas breves preguntas para identificar tu patrón emocional dominante y recomendarte el enfoque terapéutico más efectivo.")
-        
+        st.markdown("<h3 style='color: #7fa99b;'>🧬 Diagnosticador de Patrones Inconscientes e Heridas de la Infancia</h3>", unsafe_allow_html=True)
+        st.markdown("""
+        <p style='color: #aaaaaa; font-size: 14px;'>
+        Este test explora los <strong>patrones emocionales programados en la infancia</strong> —heridas de abandono, 
+        rechazo, humillación, parentificación y lealtades familiares— que suelen operar de forma inconsciente 
+        en las relaciones y decisiones de la vida adulta. No evalúa tu estado de ánimo actual, sino tu 
+        <strong>historia psicodinámica profunda</strong>.
+        </p>
+        """, unsafe_allow_html=True)
+        st.caption("Responde con honestidad reflexiva. No hay respuestas correctas o incorrectas.")
+        st.markdown("---")
+
         test_answers = {}
         for q in QUESTIONS:
             st.markdown(f"**{q['id']}. {q['pregunta']}**")
             opciones_text = [op[0] for op in q["opciones"]]
-            selected_op_text = st.radio(f"Selecciona una opción (Pregunta {q['id']}):", opciones_text, key=f"q_{q['id']}", label_visibility="collapsed")
-            # Buscar el puntaje correspondiente
+            selected_op_text = st.radio(
+                f"q{q['id']}",
+                opciones_text,
+                key=f"q_{q['id']}",
+                label_visibility="collapsed"
+            )
             for text, pts in q["opciones"]:
                 if text == selected_op_text:
                     test_answers[q["id"]] = pts
             st.markdown("---")
-            
-        if st.button("🔍 Evaluar Patrón Emocional y Enfoque Recomendado", type="primary", use_container_width=True):
+
+        if st.button("🔍 Analizar mi Patrón Profundo", type="primary", use_container_width=True):
             resultado = analyze_test_results(test_answers)
             st.session_state.test_result = resultado
-            
-            # Guardar el patrón detectado en el perfil del paciente
+            # Guardar en perfil del paciente
             patron_name = resultado["patron"]
             if patron_name not in st.session_state.bot.profile.patrones_identificados:
                 st.session_state.bot.profile.patrones_identificados.append(patron_name)
-            st.session_state.bot.profile.agregar_nota(f"RESULTADO DE TEST: Patrón identificado '{patron_name}'. Enfoque recomendado: {resultado['enfoque_sugerido']}.")
+            nota_test = (
+                f"TEST PSICOANALÍTICO: Patrón principal '{patron_name}'. "
+                f"Patrón secundario: '{resultado.get('patron_secundario', 'N/A')}'. "
+                f"Enfoque sugerido: {resultado['enfoque_sugerido']}."
+            )
+            st.session_state.bot.profile.agregar_nota(nota_test)
             st.rerun()
-            
+
         if "test_result" in st.session_state and st.session_state.test_result:
             res = st.session_state.test_result
-            st.success(f"### 🎯 Patrón Emocional Principal: **{res['patron']}**")
-            st.write(f"**Descripción:** {res['descripcion']}")
-            st.write(f"💡 **Recomendación Práctica:** {res['recomendacion']}")
-            
-            st.info(f"✨ **Enfoque Terapéutico Más Efectivo Recomendado:** **{res['enfoque_sugerido']}**")
-            
-            if st.button(f"⚙️ Ajustar Bot Automáticamente a '{res['enfoque_sugerido']}'", use_container_width=True):
-                st.session_state.bot.set_approach(res['enfoque_sugerido'])
+
+            # Resultado principal
+            st.markdown(f"""
+            <div style='background: linear-gradient(135deg, #1a2a2a 0%, #1e2d2d 100%);
+                        border: 1px solid #7fa99b; border-radius: 12px; padding: 20px; margin-bottom: 16px;'>
+                <h4 style='color: #7fa99b; margin: 0 0 8px 0;'>🎯 Patrón Principal Detectado</h4>
+                <h3 style='color: #ffffff; margin: 0 0 12px 0;'>{res['patron']}</h3>
+                <p style='color: #cccccc; margin: 0;'>{res['descripcion']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Patrón secundario si existe
+            if res.get("patron_secundario"):
+                st.info(f"🔗 **Patrón Secundario Presente:** {res['patron_secundario']}")
+
+            # Manifestaciones
+            if res.get("manifestaciones"):
+                st.markdown("#### 🔎 Cómo suele manifestarse este patrón en tu vida:")
+                for m in res["manifestaciones"]:
+                    st.markdown(f"- {m}")
+
+            st.markdown("---")
+
+            # Enfoque recomendado
+            st.markdown(f"""
+            <div style='background: #1a2126; border: 1px solid #4a7a6a;
+                        border-radius: 10px; padding: 16px; margin-bottom: 16px;'>
+                <h4 style='color: #4cd137; margin: 0 0 6px 0;'>✨ Enfoque Terapéutico Recomendado</h4>
+                <p style='color: #ffffff; font-size: 16px; font-weight: bold; margin: 0 0 10px 0;'>{res['enfoque_sugerido']}</p>
+                <p style='color: #aaaaaa; margin: 0;'>💡 {res['recomendacion']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Botón de ajuste automático
+            # Mapear enfoque sugerido a los enfoques disponibles en el bot
+            enfoque_map = {
+                "Psicoanálisis (Sigmund Freud / John Bowlby - Teoría del Apego)": "Psicoanálisis (Sigmund Freud)",
+                "Terapia Humanista (Carl Rogers) / Psicoanálisis": "Terapia Humanista (Carl Rogers)",
+                "Logoterapia (Viktor Frankl) / Psicoanálisis (Sigmund Freud)": "Logoterapia (Viktor Frankl)",
+                "Terapia Cognitivo-Conductual (TCC) / Psicoanálisis Relacional": "Terapia Cognitivo-Conductual (TCC)",
+                "Psicoanálisis Transgeneracional / Constelaciones Familiares (Bert Hellinger)": "Psicoanálisis (Sigmund Freud)"
+            }
+            enfoque_bot = enfoque_map.get(res["enfoque_sugerido"], "Terapia Cognitivo-Conductual (TCC)")
+
+            if st.button(f"⚙️ Ajustar sesión al enfoque: '{enfoque_bot}'", use_container_width=True):
+                st.session_state.bot.set_approach(enfoque_bot)
+                patron = res["patron"]
                 st.session_state.chat_history.append({
                     "role": "assistant",
-                    "content": f"Basado en los resultados de tu test profundo de patrones emocionales, he ajustado nuestro enfoque a: **{res['enfoque_sugerido']}**. ¿De qué te gustaría hablar ahora?",
+                    "content": (
+                        f"He revisado los resultados de tu test de patrones psicoanalíticos. "
+                        f"Según lo que exploraste, hay indicios de un patrón relacionado con: **{patron}**. "
+                        f"He ajustado nuestra sesión al enfoque de **{enfoque_bot}** para acompañarte "
+                        f"desde ese lugar más profundo. ¿Hay algún momento o recuerdo de tu historia "
+                        f"que quieras empezar a explorar hoy?"
+                    ),
                     "timestamp": datetime.datetime.now().strftime("%H:%M")
                 })
-                st.success(f"Enfoque cambiado a {res['enfoque_sugerido']} con éxito. ¡Vuelve a la pestaña de chat!")
+                st.success(f"✅ Sesión ajustada a: {enfoque_bot}. Regresa a la pestaña de chat.")
                 st.rerun()
+
+
 
     # ──── PESTAÑA 2: RESUMEN CLÍNICO (EXPEDIENTE) ────
     with tab_summary:
