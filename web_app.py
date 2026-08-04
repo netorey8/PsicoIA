@@ -15,6 +15,10 @@ try:
 except ImportError:
     EDGE_TTS_AVAILABLE = False
 
+# Asegurar importaciones locales
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from psychologist import PsychologistBot
+
 from shared_utils import (
     get_appdata_dir,
     get_settings_path,
