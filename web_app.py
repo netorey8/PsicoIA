@@ -423,7 +423,6 @@ else:
         if st.button("🔍 Analizar mi Patrón Profundo", type="primary", use_container_width=True):
             resultado = analyze_test_results(test_answers)
             st.session_state.test_result = resultado
-            # Guardar en perfil del paciente
             patron_name = resultado["patron"]
             if patron_name not in st.session_state.bot.profile.patrones_identificados:
                 st.session_state.bot.profile.patrones_identificados.append(patron_name)
@@ -437,20 +436,31 @@ else:
 
         if "test_result" in st.session_state and st.session_state.test_result:
             res = st.session_state.test_result
+            certeza = res.get("certeza", 85)
+            icono = res.get("icono", "🎯")
 
-            # Resultado principal
+            # Resultado principal con % de certeza
             st.markdown(f"""
             <div style='background: linear-gradient(135deg, #1a2a2a 0%, #1e2d2d 100%);
                         border: 1px solid #7fa99b; border-radius: 12px; padding: 20px; margin-bottom: 16px;'>
-                <h4 style='color: #7fa99b; margin: 0 0 8px 0;'>🎯 Patrón Principal Detectado</h4>
-                <h3 style='color: #ffffff; margin: 0 0 12px 0;'>{res['patron']}</h3>
+                <div style='display: flex; justify-content: space-between; align-items: flex-start;'>
+                    <div>
+                        <h4 style='color: #7fa99b; margin: 0 0 8px 0;'>🎯 Patrón Principal Detectado</h4>
+                        <h3 style='color: #ffffff; margin: 0 0 12px 0;'>{icono} {res['patron']}</h3>
+                    </div>
+                    <div style='background: #7fa99b; color: #0d1117; border-radius: 8px;
+                                padding: 6px 14px; font-size: 18px; font-weight: bold; white-space: nowrap;'>
+                        {certeza}% certeza
+                    </div>
+                </div>
                 <p style='color: #cccccc; margin: 0;'>{res['descripcion']}</p>
             </div>
             """, unsafe_allow_html=True)
 
-            # Patrón secundario si existe
+            # Patrón secundario
             if res.get("patron_secundario"):
-                st.info(f"🔗 **Patrón Secundario Presente:** {res['patron_secundario']}")
+                ic2 = res.get("icono_secundario", "🔗")
+                st.info(f"{ic2} **Patrón Secundario Presente:** {res['patron_secundario']}")
 
             # Manifestaciones
             if res.get("manifestaciones"):
@@ -470,11 +480,10 @@ else:
             </div>
             """, unsafe_allow_html=True)
 
-            # Botón de ajuste automático
             # Mapear enfoque sugerido a los enfoques disponibles en el bot
             enfoque_map = {
-                "Psicoanálisis (Sigmund Freud / John Bowlby - Teoría del Apego)": "Psicoanálisis (Sigmund Freud)",
-                "Terapia Humanista (Carl Rogers) / Psicoanálisis": "Terapia Humanista (Carl Rogers)",
+                "Psicoanálisis (Teoría del Apego — John Bowlby / Donald Winnicott)": "Psicoanálisis (Sigmund Freud)",
+                "Terapia Humanista (Carl Rogers) / Psicoanálisis del Self": "Terapia Humanista (Carl Rogers)",
                 "Logoterapia (Viktor Frankl) / Psicoanálisis (Sigmund Freud)": "Logoterapia (Viktor Frankl)",
                 "Terapia Cognitivo-Conductual (TCC) / Psicoanálisis Relacional": "Terapia Cognitivo-Conductual (TCC)",
                 "Psicoanálisis Transgeneracional / Constelaciones Familiares (Bert Hellinger)": "Psicoanálisis (Sigmund Freud)"
