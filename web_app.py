@@ -15,33 +15,23 @@ try:
 except ImportError:
     EDGE_TTS_AVAILABLE = False
 
-# Make sure imports from current directory work
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from psychologist import PsychologistBot
-
-DEFAULT_API_KEY = "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"
-
-# ─────────────────────────────────────────────────────────────
-# PATHS Y MIGRACIÓN A %APPDATA%
-# ─────────────────────────────────────────────────────────────
-def get_appdata_dir():
-    # En la nube de Streamlit (Linux), APPDATA es None, por lo que usará la carpeta del usuario
-    appdata = os.environ.get("APPDATA")
-    if not appdata:
-        appdata = os.path.expanduser("~")
-    path = os.path.join(appdata, "PsicoAIPro")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-def get_settings_path():
-    return os.path.join(get_appdata_dir(), "settings.json")
-
-def get_books_dir():
-    bdir = os.path.join(get_appdata_dir(), "books")
-    os.makedirs(bdir, exist_ok=True)
-    return bdir
+from shared_utils import (
+    get_appdata_dir,
+    get_settings_path,
+    get_books_dir,
+    load_saved_settings,
+    save_settings,
+    mask_api_key,
+    PRIVACY_TERMS_TEXT,
+    DISCLAIMER_EXPORT_TEXT
+)
+from emotional_test import QUESTIONS, analyze_test_results
 
 def migrate_default_books():
+    """Solo necesario en Windows (escritorio). En la nube, los libros ya están en el repo."""
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return  # En Streamlit Cloud, no se necesita migración
     dest_books_dir = get_books_dir()
     src_books_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "books")
     if os.path.exists(src_books_dir):
@@ -95,23 +85,26 @@ st.set_page_config(page_title="PsicoAI Pro", page_icon="🌿", layout="wide")
 
 # Inicializar sesión y configuraciones
 if "consent_granted" not in st.session_state:
-    settings_path = get_settings_path()
-    consent = False
-    key = ""
-    if os.path.exists(settings_path):
-        try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                consent = data.get("consent_granted", False)
-                key = data.get("api_key", "")
-        except Exception:
-            pass
-    st.session_state.consent_granted = consent
-    st.session_state.api_key = key or DEFAULT_API_KEY
+    saved = load_saved_settings()
+    st.session_state.consent_granted = saved.get("consent_granted", False)
+    st.session_state.api_key = saved.get("api_key", os.environ.get("GROQ_API_KEY", ""))
 
 if "bot" not in st.session_state:
-    migrate_default_books()
-    st.session_state.bot = PsychologistBot(books_dir=get_books_dir(), api_key=st.session_state.api_key)
+    try:
+        migrate_default_books()
+        st.session_state.bot = PsychologistBot(books_dir=get_books_dir(), api_key=st.session_state.api_key)
+        st.session_state.init_error = None
+    except Exception as e:
+        st.session_state.init_error = str(e)
+        # Crear un bot minimo sin libros para no bloquear la app
+        try:
+            import tempfile
+            empty_dir = tempfile.mkdtemp()
+            st.session_state.bot = PsychologistBot(books_dir=empty_dir, api_key=st.session_state.api_key)
+        except Exception:
+            st.error(f"Error critico al iniciar: {e}")
+            st.stop()
+
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
@@ -149,22 +142,7 @@ if not st.session_state.consent_granted:
     st.markdown("<h2 style='text-align: center; color: #7fa99b;'>🌿 Aviso de Privacidad y Consentimiento</h2>", unsafe_allow_html=True)
     
     # Contenedor centralizado para los términos
-    terms_text = (
-        "Bienvenido a PsicoAI Pro.\n\n"
-        "Por favor, lea con atención la siguiente información sobre el uso de esta aplicación:\n\n"
-        "1. NATURALEZA DEL SERVICIO\n"
-        "Esta aplicación es un asistente de apoyo emocional y acompañamiento psicoeducativo basado en inteligencia artificial y libros precargados de autores enfocados en terapia emocional. "
-        "NO ES un psicólogo clínico, no es un terapeuta y no reemplaza la terapia, consulta o tratamiento psicológico o médico humano. "
-        "Si usted está experimentando una crisis de salud mental severa o pensamientos de autolesión, por favor busque ayuda profesional presencial de inmediato.\n\n"
-        "2. PROCESAMIENTO DE DATOS POR TERCEROS\n"
-        "La aplicación utiliza IA para procesar las respuestas del chat. Sus mensajes se envían de forma cifrada a través de internet a sus servidores para generar las respuestas. No envíe información de identificación personal altamente sensible (como nombres completos, direcciones o números de cuenta).\n\n"
-        "3. PRIVACIDAD Y REGISTRO LOCAL\n"
-        "Esta aplicación no almacena el historial de chat de forma permanente en archivos de texto. Las notas clínicas y el perfil conductual temporal se guardan en la memoria RAM únicamente durante su sesión actual. Al presionar 'Nueva Sesión' o cerrar la aplicación, toda esta información se destruirá por completo.\n\n"
-        "Usted puede optar por desactivar el perfil temporal de sesión marcando la casilla correspondiente en el panel principal.\n\n"
-        "Al hacer clic en 'Aceptar', usted declara que comprende estas limitaciones y acepta el uso del servicio bajo estos términos."
-    )
-    
-    st.text_area("Términos de Privacidad", value=terms_text, height=320, disabled=True)
+    st.text_area("Términos de Privacidad", value=PRIVACY_TERMS_TEXT, height=320, disabled=True)
     
     st.warning("⚠️ **Nota importante sobre el navegador:** Si utilizas el traductor automático de Google Chrome (u otro navegador), esto puede causar errores inesperados en la aplicación (como `removeChild`). Por favor, desactiva la traducción automática para esta página o selecciona **'No traducir nunca este sitio'** para asegurar un funcionamiento correcto.")
     
@@ -175,14 +153,7 @@ if not st.session_state.consent_granted:
     if col_acc.button("Aceptar y Continuar", type="primary", use_container_width=True):
         st.session_state.consent_granted = True
         st.session_state.bot.api_key = st.session_state.api_key
-        
-        # Guardar en settings.json
-        settings_path = get_settings_path()
-        try:
-            with open(settings_path, "w", encoding="utf-8") as f:
-                json.dump({"consent_granted": True, "api_key": st.session_state.api_key}, f)
-        except Exception:
-            pass
+        save_settings(True, st.session_state.api_key)
         st.rerun()
         
     if col_dec.button("Declinar y Salir", use_container_width=True):
@@ -272,9 +243,10 @@ else:
                     st.session_state.bot.db.load_all_books()
                 st.success(f"Libro '{uploaded_file.name}' indexado con éxito.")
             
-    # 2. Medidor de Emociones
+    # 2. Medidor de Emociones (Estimación Psicoeducativa)
     st.sidebar.markdown("---")
-    st.sidebar.markdown("<h4 style='color: #d4c4b0;'>📊 Perfil Emocional Actual</h4>", unsafe_allow_html=True)
+    st.sidebar.markdown("<h4 style='color: #d4c4b0;'>📊 Estado Emocional (Estimación)</h4>", unsafe_allow_html=True)
+    st.sidebar.caption("ℹ️ *Estimación conversacional basada en el diálogo, no constituye una medición clínica ni diagnóstico.*")
     
     emotions_config = [
         ("Calma", "calma", "#4cd137"),
@@ -380,10 +352,7 @@ else:
     st.sidebar.markdown("---")
     st.sidebar.caption("⚠️ **¿Problemas de visualización?** Si la app se detiene con un error 'removeChild', desactiva la traducción automática de Google Chrome u otro navegador para este sitio.")
 
-    # ─────────────────────────────────────────────────────────
-    # ÁREA PRINCIPAL DE CONTENIDO (CHAT Y NOTAS CLÍNICAS)
-    # ─────────────────────────────────────────────────────────
-    tab_chat, tab_summary = st.tabs(["💬 Sesión de Acompañamiento", "📋 Resumen del Caso"])
+    tab_chat, tab_test, tab_summary = st.tabs(["💬 Sesión de Acompañamiento", "📊 Test de Patrones Emocionales", "📋 Resumen del Caso"])
     
     # ──── PESTAÑA 1: CHAT INTERACTIVO ────
     with tab_chat:
@@ -417,6 +386,51 @@ else:
         if prompt := st.chat_input("Escribe aquí cómo te sientes o qué pasa por tu mente..."):
             process_chat_message(prompt)
             st.rerun()
+
+    # ──── PESTAÑA 2: TEST DE PATRONES EMOCIONALES ────
+    with tab_test:
+        st.markdown("<h3 style='color: #7fa99b;'>📊 Diagnosticador Profundo de Patrones Emocionales</h3>", unsafe_allow_html=True)
+        st.caption("Responde estas breves preguntas para identificar tu patrón emocional dominante y recomendarte el enfoque terapéutico más efectivo.")
+        
+        test_answers = {}
+        for q in QUESTIONS:
+            st.markdown(f"**{q['id']}. {q['pregunta']}**")
+            opciones_text = [op[0] for op in q["opciones"]]
+            selected_op_text = st.radio(f"Selecciona una opción (Pregunta {q['id']}):", opciones_text, key=f"q_{q['id']}", label_visibility="collapsed")
+            # Buscar el puntaje correspondiente
+            for text, pts in q["opciones"]:
+                if text == selected_op_text:
+                    test_answers[q["id"]] = pts
+            st.markdown("---")
+            
+        if st.button("🔍 Evaluar Patrón Emocional y Enfoque Recomendado", type="primary", use_container_width=True):
+            resultado = analyze_test_results(test_answers)
+            st.session_state.test_result = resultado
+            
+            # Guardar el patrón detectado en el perfil del paciente
+            patron_name = resultado["patron"]
+            if patron_name not in st.session_state.bot.profile.patrones_identificados:
+                st.session_state.bot.profile.patrones_identificados.append(patron_name)
+            st.session_state.bot.profile.agregar_nota(f"RESULTADO DE TEST: Patrón identificado '{patron_name}'. Enfoque recomendado: {resultado['enfoque_sugerido']}.")
+            st.rerun()
+            
+        if "test_result" in st.session_state and st.session_state.test_result:
+            res = st.session_state.test_result
+            st.success(f"### 🎯 Patrón Emocional Principal: **{res['patron']}**")
+            st.write(f"**Descripción:** {res['descripcion']}")
+            st.write(f"💡 **Recomendación Práctica:** {res['recomendacion']}")
+            
+            st.info(f"✨ **Enfoque Terapéutico Más Efectivo Recomendado:** **{res['enfoque_sugerido']}**")
+            
+            if st.button(f"⚙️ Ajustar Bot Automáticamente a '{res['enfoque_sugerido']}'", use_container_width=True):
+                st.session_state.bot.set_approach(res['enfoque_sugerido'])
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": f"Basado en los resultados de tu test profundo de patrones emocionales, he ajustado nuestro enfoque a: **{res['enfoque_sugerido']}**. ¿De qué te gustaría hablar ahora?",
+                    "timestamp": datetime.datetime.now().strftime("%H:%M")
+                })
+                st.success(f"Enfoque cambiado a {res['enfoque_sugerido']} con éxito. ¡Vuelve a la pestaña de chat!")
+                st.rerun()
 
     # ──── PESTAÑA 2: RESUMEN CLÍNICO (EXPEDIENTE) ────
     with tab_summary:
@@ -466,7 +480,7 @@ else:
             st.info("No hay notas clínicas disponibles. Inicia una conversación activa para acumular observaciones.")
 
         # Lógica de formateo y descarga del archivo de texto
-        summary_lines = []
+        summary_lines = [DISCLAIMER_EXPORT_TEXT]
         summary_lines.append("=========================================")
         summary_lines.append("         PSICOAI PRO - RESUMEN CLÍNICO")
         summary_lines.append("=========================================\n")
@@ -511,6 +525,7 @@ else:
         export_text = "\n".join(summary_lines)
         
         st.markdown("---")
+        st.warning("⚠️ **Aviso:** Este resumen es generado automáticamente por Inteligencia Artificial de forma psicoeducativa. No constituye un diagnóstico ni evaluación psicológica formal.")
         st.download_button(
             label="📥 Descargar Reporte Clínico Completo (.txt)",
             data=export_text,

@@ -68,7 +68,85 @@ class BookDatabase:
                 self._load_pdf_into(fpath, fname, new_fragments)
         with self._lock:
             self.fragments = new_fragments
+            self._precompute_tfidf_index()
         print(f"Base de Datos cargada: {len(self.fragments)} fragmentos de libros indexados.")
+
+    def _precompute_tfidf_index(self):
+        """Precalcula frecuencias e IDF para acelerar las busquedas RAG."""
+        self._doc_count = len(self.fragments)
+        self._idf_cache = {}
+        if self._doc_count == 0:
+            return
+        
+        # Calcular frecuencia de palabras en todos los documentos
+        word_doc_freq = Counter()
+        stopwords = {
+            "el","la","los","las","un","una","de","del","en","y","a","que","es",
+            "se","con","por","para","me","mi","tu","su","al","lo","le","no","si",
+            "pero","muy","mas","ya","hay","ser","the","an","is","of","in","and",
+            "to","it","my","was","are","be","that","this","with","have","como",
+            "cuando","donde","quien","porque","aunque","sino","pues","todo","esta"
+        }
+        
+        for frag in self.fragments:
+            words = set(w for w in re.findall(r"\b\w{3,}\b", frag["texto"].lower()) if w not in stopwords)
+            frag["_word_counts"] = Counter(re.findall(r"\b\w{3,}\b", frag["texto"].lower()))
+            frag["_total_words"] = len(re.findall(r"\b\w{3,}\b", frag["texto"].lower())) or 1
+            for w in words:
+                word_doc_freq[w] += 1
+                
+        for w, freq in word_doc_freq.items():
+            self._idf_cache[w] = max(0.3, (self._doc_count / (freq + 1)) ** 0.5)
+
+    def search(self, query: str, top_k: int = 3) -> list:
+        """Busqueda semantica optimizada usando IDF precalculado."""
+        if not self.fragments:
+            return []
+        
+        stopwords = {
+            "el","la","los","las","un","una","de","del","en","y","a","que","es",
+            "se","con","por","para","me","mi","tu","su","al","lo","le","no","si",
+            "pero","muy","mas","ya","hay","ser","the","an","is","of","in","and",
+            "to","it","my","was","are","be","that","this","with","have","como",
+            "cuando","donde","quien","porque","aunque","sino","pues","todo","esta"
+        }
+        query_words = set(
+            w for w in re.findall(r"\b\w{3,}\b", query.lower())
+            if w not in stopwords
+        )
+        if not query_words:
+            return self.fragments[:top_k]
+
+        scores = []
+        for idx, frag in enumerate(self.fragments):
+            wc = frag.get("_word_counts", Counter())
+            total = frag.get("_total_words", 1)
+            
+            # TF-IDF Score con IDF precalculado
+            score = sum((wc.get(w, 0) / total) * self._idf_cache.get(w, 1.0) for w in query_words)
+            
+            # Bonus por cobertura de palabras clave
+            coverage = len(query_words & set(wc.keys()))
+            score += coverage * 0.08
+            score += min(len(frag["texto"]) / 10000, 0.05)
+            
+            if score > 0:
+                scores.append((idx, score))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        # Diversificacion: maximo 2 fragmentos del mismo libro
+        results = []
+        book_count = {}
+        for idx, _ in scores:
+            frag = self.fragments[idx]
+            libro = frag["libro"]
+            if book_count.get(libro, 0) < 2:
+                results.append(frag)
+                book_count[libro] = book_count.get(libro, 0) + 1
+            if len(results) >= top_k:
+                break
+        return results
 
     def _load_txt(self, path, fname):
         self._load_txt_into(path, fname, self.fragments)
@@ -259,16 +337,33 @@ class PatientProfile:
         self.vinculos_importantes = []    # personas clave mencionadas
         self.notas_sesion = []            # notas clinicas por turno
         self.turno = 0
+        self.alerta_crisis_reciente = False  # Flag de cautela tras una crisis
+        self.turnos_desde_alerta = 0
 
     def agregar_nota(self, nota: str):
         if nota:
             self.notas_sesion.append(nota)
             self.turno += 1
+            if self.alerta_crisis_reciente:
+                self.turnos_desde_alerta += 1
+                if self.turnos_desde_alerta > 5:
+                    self.alerta_crisis_reciente = False
+                    self.turnos_desde_alerta = 0
+
+    def activar_alerta_crisis(self):
+        self.alerta_crisis_reciente = True
+        self.turnos_desde_alerta = 0
 
     def resumen_para_prompt(self) -> str:
+        lines = []
+        if self.alerta_crisis_reciente:
+            lines.append(
+                "\n⚠️ ATENCIÓN CLÍNICA: Se ha detectado una situación de alta vulnerabilidad o crisis en turnos recientes. "
+                "Mantén un tono especialmente cálido, empático, de contención y validación emocional sin presionar."
+            )
         if not self.notas_sesion:
-            return ""
-        lines = ["\n── LO QUE SABES DE ESTA PERSONA HASTA AHORA ──"]
+            return "\n".join(lines)
+        lines.append("\n── LO QUE SABES DE ESTA PERSONA HASTA AHORA ──")
         # Mostrar las ultimas 10 notas clinicas
         for nota in self.notas_sesion[-10:]:
             lines.append(f"  • {nota}")
@@ -287,7 +382,7 @@ class PsychologistBot:
         self.db = BookDatabase(books_dir)
         self.profile = PatientProfile()
 
-        # BLQ-01: La API key la provee el usuario en el primer inicio
+        # API key provista por el usuario o entorno
         self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
         self.conversation_history = []
         self.approach = "Terapia Cognitivo-Conductual (TCC)"
@@ -311,6 +406,42 @@ class PsychologistBot:
             "tristeza": 15, "ira": 10, "alegria": 15,
         }
 
+    def _build_crisis_response(self, motivo: str = "filtro_determinista") -> dict:
+        self.profile.activar_alerta_crisis()
+        crisis_text = (
+            "Lamento mucho que te sientas asi y que estes pasando por un momento de tanto malestar. "
+            "En este espacio no puedo darte la atención médica u oportuna que necesitas en una crisis. Tu bienestar y tu vida son lo mas importante.\n\n"
+            "Por favor, ponte en contacto de inmediato con profesionales o líneas de apoyo especializadas:\n\n"
+            "🇲🇽 México: Línea de la Vida (Linea de la Vida) — 800 911 2000 (24 hrs, gratuita)\n"
+            "🇺🇸 / 🇨🇦 EEUU y Canadá: 988 (Suicide & Crisis Lifeline)\n"
+            "🇪🇸 España: 024 (Línea de atención a la conducta suicida)\n"
+            "🌐 Otros países o apoyo internacional: https://findahelpline.com\n"
+            "🚨 Emergencias Generales: 911 (o el número de emergencias de tu localidad)\n\n"
+            "No estás solo/a. Hay profesionales capacitados que quieren y pueden escucharte en este momento. Por favor busca ayuda."
+        )
+        return {
+            "respuesta": crisis_text,
+            "cita_libro": {},
+            "emociones": {
+                "calma": 15,
+                "ansiedad": 85,
+                "tristeza": 80,
+                "ira": 40,
+                "alegria": 0
+            },
+            "nota_clinica": f"DETECCION DE CRISIS [{motivo}]: Se activo protocolo de contencion y derivacion de emergencia.",
+            "temas_detectados": ["crisis", "riesgo_emocional_alto"],
+            "patrones_detectados": [],
+            "recursos_detectados": [],
+            "vinculos_detectados": [],
+            "opciones_respuesta": [
+                "Necesito hablar con alguien de apoyo",
+                "Estoy en un lugar seguro ahora",
+                "Quiero contarte como me siento con mas calma"
+            ],
+            "is_crisis": True
+        }
+
     def detect_crisis(self, text: str) -> bool:
         # Normalizar texto para evitar problemas de codificación (mojibake) y acentos
         text_lower = text.lower()
@@ -321,78 +452,21 @@ class PsychologistBot:
         text_lower = re.sub(r"[óöôò]", "o", text_lower)
         text_lower = re.sub(r"[úüûù]", "u", text_lower)
         
-        # Expresiones regulares sin caracteres especiales (usando 'n' en vez de 'ñ' y '.' para mayor resiliencia)
         patterns = [
             r"\b(suicid[a-z]*|matarm[e]|quitarme la vida|morirme|quiero morir|no quiero vivir|hacer[a-z]* da.o|cortarm[e]|autolesion[a-z]*|sobredosis)\b",
             r"\b(ahorcar|colgarme|veneno|pastillas para morir|plan para suicid[a-z]*)\b",
             r"\b(cortarme las venas|saltar de un puente|tirarme a las vias|quiero lastimar a alguien|quiero matar a alguien)\b",
+            r"\b(desaparecer|no le importaria a nadie|si me fuera todo seria mejor|ya no aguanto mas esta vida)\b"
         ]
         for pattern in patterns:
             if re.search(pattern, text_lower):
                 return True
         return False
 
-    # ── CHAT PRINCIPAL ───────────────────────────────────────
-    def chat(self, user_message: str, save_profile: bool = True) -> dict:
-        # 1. Detector de crisis determinista
-        if self.detect_crisis(user_message):
-            crisis_text = (
-                "Lamento mucho que te sientas asi y que estes pasando por un momento tan doloroso, "
-                "pero en este espacio no puedo darte la ayuda urgente que necesitas. Tu vida y tu seguridad "
-                "son lo mas importante.\n\n"
-                "Por favor, comunicarte inmediatamente con un profesional de la salud o con los servicios de apoyo en crisis:\n\n"
-                "Linea de la Vida (Mexico): 800 911 2000 (Atencion gratuita, confidencial y disponible las 24 horas, los 365 dias del anio).\n"
-                "Numero de Emergencia General: 911 (si estas en peligro inmediato).\n\n"
-                "No estas solo, hay personas capacitadas que quieren y pueden escucharte ahora mismo. Por favor, busca ayuda."
-            )
-            return {
-                "respuesta": crisis_text,
-                "cita_libro": {},
-                "emociones": {
-                    "calma": 20,
-                    "ansiedad": 90,
-                    "tristeza": 80,
-                    "ira": 40,
-                    "alegria": 0
-                },
-                "nota_clinica": "DETECCION DE CRISIS: Se intercepto un mensaje con riesgo de autolesion o crisis emocional severa. Filtro determinista activado.",
-                "temas_detectados": ["crisis", "riesgo_autolesion"],
-                "patrones_detectados": [],
-                "recursos_detectados": [],
-                "vinculos_detectados": [],
-                "opciones_respuesta": [
-                    "Necesito hablar con alguien ahora",
-                    "Estoy en un lugar seguro por ahora",
-                    "Quiero contarte que esta pasando"
-                ],
-                "is_crisis": True
-            }
-
-        # Buscar fragmentos relevantes usando mensaje + contexto reciente
-        search_query = user_message
-        if self.profile.notas_sesion:
-            # Enriquecer la busqueda con contexto previo
-            context_hint = " ".join(self.profile.temas_recurrentes[-3:])
-            search_query = f"{user_message} {context_hint}"
-
-        fragments = self.db.search(search_query, top_k=3)
-        system_prompt = self._build_system_prompt(fragments)
-
-        # Guardar en historial
-        self.conversation_history.append({"role": "user", "content": user_message})
-
-        # Construir lista de mensajes para Groq
-        messages = [{"role": "system", "content": system_prompt}] + self.conversation_history[-10:]
-
-        if not self.api_key:
-            return self._error_response("No hay una clave de API configurada. Ve a Configuración para agregar tu clave de Groq.")
-
+    def _call_groq(self, messages: list) -> str:
+        """Realiza la llamada HTTP a Groq con reintentos y rotacion de modelos."""
         import requests
-        raw = ""
-        success = False
-        
-        # MAY-02: Retry con backoff exponencial rotando modelos
-        backoff_delays = [0, 2, 4, 8]
+        backoff_delays = [0, 2, 4]
         for model in self.models:
             for delay in backoff_delays:
                 if delay > 0:
@@ -404,36 +478,62 @@ class PsychologistBot:
                         json={
                             "model": model,
                             "messages": messages,
-                            "temperature": 0.8,
-                            "max_tokens": 1024,  # MAY-02: reducido de 2048
+                            "temperature": 0.7,
+                            "max_tokens": 1024,
                             "response_format": {"type": "json_object"}
                         },
-                        timeout=60
-                        # BLQ-03: verify=False eliminado — usar certificados del sistema
+                        timeout=45
                     )
                     if res.status_code == 200:
-                        raw = res.json()['choices'][0]['message']['content']
-                        success = True
-                        break
+                        return res.json()['choices'][0]['message']['content']
                     elif res.status_code == 429:
-                        print(f"[Groq 429] {model} saturado, reintentando en {backoff_delays[backoff_delays.index(delay)+1] if delay < 8 else 'N/A'}s...")
+                        print(f"[Groq 429] {model} saturado, reintentando...")
                         continue
                     elif res.status_code == 413:
-                        print(f"[Groq 413] Prompt demasiado grande para {model}, rotando modelo...")
-                        break  # No reintenta este modelo, pasa al siguiente
+                        print(f"[Groq 413] Prompt muy grande para {model}, pasando al siguiente...")
+                        break
                     else:
                         print(f"[Groq Err] {res.status_code}: {res.text}")
                         break
                 except Exception as e:
                     print(f"[Groq Conn Err] {model}: {e}")
                     break
-            if success:
-                break
+        return ""
 
-        if not success:
+    # ── CHAT PRINCIPAL ───────────────────────────────────────
+    def chat(self, user_message: str, save_profile: bool = True) -> dict:
+        # Capa 1: Detector de crisis determinista por Regex
+        if self.detect_crisis(user_message):
+            return self._build_crisis_response("capa1_regex")
+
+        # Buscar fragmentos relevantes usando mensaje + contexto reciente
+        search_query = user_message
+        if self.profile.notas_sesion:
+            context_hint = " ".join(self.profile.temas_recurrentes[-3:])
+            search_query = f"{user_message} {context_hint}"
+
+        fragments = self.db.search(search_query, top_k=3)
+        system_prompt = self._build_system_prompt(fragments)
+
+        # Guardar en historial
+        self.conversation_history.append({"role": "user", "content": user_message})
+
+        messages = [{"role": "system", "content": system_prompt}] + self.conversation_history[-10:]
+
+        if not self.api_key:
+            return self._error_response("No hay una clave de API configurada. Ve a Configuración para agregar tu clave de Groq.")
+
+        raw = self._call_groq(messages)
+        if not raw:
             return self._error_response("Lo siento, estoy teniendo dificultades de comunicación con mi servidor en este momento. Hablemos con calma.")
 
         parsed = self._parse_response(raw, fragments)
+
+        # Capa 2: Evaluación del nivel de riesgo detectado por el LLM en el JSON
+        nivel_riesgo = str(parsed.get("nivel_riesgo", "bajo")).lower().strip()
+        if nivel_riesgo == "alto":
+            print("[CRISIS DETECTADA POR LLM - CAPA 2]")
+            return self._build_crisis_response("capa2_llm_eval")
 
         # Actualizar perfil del paciente si está habilitado
         if save_profile:
@@ -441,7 +541,6 @@ class PsychologistBot:
             if nota:
                 self.profile.agregar_nota(nota)
 
-            # Actualizar temas, patrones y vinculos si el modelo los detecta
             for tema in parsed.get("temas_detectados", []):
                 if tema and tema not in self.profile.temas_recurrentes:
                     self.profile.temas_recurrentes.append(tema)
@@ -597,6 +696,7 @@ Responde UNICAMENTE con un objeto JSON válido, sin markdown ni explicaciones ad
 
 {{
   "respuesta": "Tu respuesta. 2-4 parrafos. Sonido humano, empático y reflexivo.",
+  "nivel_riesgo": "bajo",
   "cita_id": 1,
   "emociones": {{
     "calma": 0,
@@ -617,6 +717,7 @@ Responde UNICAMENTE con un objeto JSON válido, sin markdown ni explicaciones ad
   ]
 }}
 
+En "nivel_riesgo": indica "bajo", "medio" o "alto". Pon "alto" si detectas cualquier ideación suicida sutil, desesperanza extrema o intención de autolesión implícita en el mensaje del usuario.
 En "cita_id": indica el numero de fragmento (1 al 3) que sirvio de base a tu respuesta, o null si ninguno de los fragmentos de la biblioteca clinica aplica directamente.
 Para emociones: numeros enteros del 0 al 100 reflejando tu lectura interna del estado emocional actual del usuario.
 
@@ -641,6 +742,7 @@ Ejemplos segun contexto:
         # Fallback values
         fallback = {
             "respuesta": "Lo siento, tuve un problema al procesar mi respuesta interna. ¿Me lo podrías repetir?",
+            "nivel_riesgo": "bajo",
             "cita_libro": {},
             "emociones": self.emotions.copy(),
             "nota_clinica": "Error al parsear el JSON de la IA.",
@@ -674,6 +776,7 @@ Ejemplos segun contexto:
         if not isinstance(respuesta, str) or not respuesta.strip():
             respuesta = "Entiendo. Cuéntame más sobre eso."
         fallback["respuesta"] = respuesta
+        fallback["nivel_riesgo"] = str(data.get("nivel_riesgo", "bajo")).lower().strip()
 
         # Validar y desinfectar 'emociones'
         emociones = data.get("emociones")

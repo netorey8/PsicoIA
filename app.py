@@ -24,26 +24,16 @@ from psychologist import PsychologistBot
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-DEFAULT_API_KEY = "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"
-
-# ─────────────────────────────────────────────────────────────
-# PATHS Y MIGRACIÓN A %APPDATA%
-# ─────────────────────────────────────────────────────────────
-def get_appdata_dir():
-    appdata = os.environ.get("APPDATA")
-    if not appdata:
-        appdata = os.path.expanduser("~")
-    path = os.path.join(appdata, "PsicoAIPro")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-def get_settings_path():
-    return os.path.join(get_appdata_dir(), "settings.json")
-
-def get_books_dir():
-    bdir = os.path.join(get_appdata_dir(), "books")
-    os.makedirs(bdir, exist_ok=True)
-    return bdir
+from shared_utils import (
+    get_appdata_dir,
+    get_settings_path,
+    get_books_dir,
+    load_saved_settings,
+    save_settings,
+    mask_api_key,
+    PRIVACY_TERMS_TEXT,
+    DISCLAIMER_EXPORT_TEXT
+)
 
 def migrate_default_books():
     dest_books_dir = get_books_dir()
@@ -76,21 +66,7 @@ class ConsentFrame(ctk.CTkFrame):
         textbox = ctk.CTkTextbox(container, font=("Segoe UI", 12), fg_color="#222b31", border_color="#2c353d", border_width=1)
         textbox.pack(pady=10, padx=30, fill="both", expand=True)
         
-        policy_text = (
-            "Bienvenido a PsicoAI Pro.\n\n"
-            "Por favor, lea con atención la siguiente información sobre el uso de esta aplicación:\n\n"
-            "1. NATURALEZA DEL SERVICIO\n"
-            "Esta aplicación es un asistente de apoyo emocional y acompañamiento psicoeducativo basado en inteligencia artificial. "
-            "NO ES un psicólogo clínico, no es un terapeuta y no reemplaza la terapia, consulta o tratamiento psicológico o médico humano. "
-            "Si usted está experimentando una crisis de salud mental severa o pensamientos de autolesión, por favor busque ayuda profesional presencial de inmediato.\n\n"
-            "2. PROCESAMIENTO DE DATOS POR TERCEROS\n"
-            "La aplicación utiliza la API externa de Groq para procesar las respuestas del chat. Sus mensajes se envían de forma cifrada a través de internet a sus servidores para generar las respuestas. No envíe información de identificación personal altamente sensible (como nombres completos, direcciones o números de cuenta).\n\n"
-            "3. PRIVACIDAD Y REGISTRO LOCAL\n"
-            "Esta aplicación no almacena el historial de chat de forma permanente en archivos de texto. Las notas clínicas y el perfil conductual temporal se guardan en la memoria RAM únicamente durante su sesión actual. Al presionar 'Nueva Sesión' o cerrar la aplicación, toda esta información se destruirá por completo.\n\n"
-            "Usted puede optar por desactivar el perfil temporal de sesión marcando la casilla correspondiente en el panel principal.\n\n"
-            "Al hacer clic en 'Aceptar', usted declara que comprende estas limitaciones y acepta el uso del servicio bajo estos términos."
-        )
-        textbox.insert("1.0", policy_text)
+        textbox.insert("1.0", PRIVACY_TERMS_TEXT)
         textbox.configure(state="disabled")
         
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
