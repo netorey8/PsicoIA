@@ -393,7 +393,7 @@ class PsychologistBot:
             "ira": 10,
             "alegria": 15,
         }
-        self.models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        self.models = ["groq/compound", "groq/compound-mini", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
     def set_approach(self, approach: str):
         self.approach = approach
@@ -464,9 +464,17 @@ class PsychologistBot:
         return False
 
     def _call_groq(self, messages: list) -> str:
-        """Realiza la llamada HTTP a Groq con reintentos y rotacion de modelos."""
+        """Realiza la llamada HTTP a Groq con reintentos y rotacion de modelos.
+        Regresa el contenido del LLM o una cadena especial '__ERROR__:<codigo>:<detalle>'
+        para permitir mensajes de error informativos al usuario.
+        """
         import requests
+        if not self.api_key or len(self.api_key.strip()) < 10:
+            print("[Groq] No hay API key configurada.")
+            return "__ERROR__:NO_KEY:Sin clave de API"
+
         backoff_delays = [0, 2, 4]
+        last_error = ""
         for model in self.models:
             for delay in backoff_delays:
                 if delay > 0:
@@ -486,19 +494,35 @@ class PsychologistBot:
                     )
                     if res.status_code == 200:
                         return res.json()['choices'][0]['message']['content']
+                    elif res.status_code == 401:
+                        print(f"[Groq 401] Clave de API inválida o expirada.")
+                        return "__ERROR__:401:Clave de API inválida o expirada"
                     elif res.status_code == 429:
                         print(f"[Groq 429] {model} saturado, reintentando...")
+                        last_error = "__ERROR__:429:Límite de uso alcanzado (rate limit)"
                         continue
                     elif res.status_code == 413:
-                        print(f"[Groq 413] Prompt muy grande para {model}, pasando al siguiente...")
+                        print(f"[Groq 413] Prompt muy grande para {model}.")
+                        last_error = "__ERROR__:413:Mensaje demasiado largo"
+                        break
+                    elif res.status_code == 503:
+                        print(f"[Groq 503] Servidor no disponible para {model}.")
+                        last_error = "__ERROR__:503:Servicio de Groq no disponible temporalmente"
                         break
                     else:
-                        print(f"[Groq Err] {res.status_code}: {res.text}")
+                        detail = res.text[:200] if res.text else "sin detalle"
+                        print(f"[Groq Err] {res.status_code}: {detail}")
+                        last_error = f"__ERROR__:{res.status_code}:{detail}"
                         break
+                except requests.exceptions.Timeout:
+                    print(f"[Groq Timeout] {model}")
+                    last_error = "__ERROR__:TIMEOUT:Tiempo de espera agotado"
+                    break
                 except Exception as e:
                     print(f"[Groq Conn Err] {model}: {e}")
+                    last_error = f"__ERROR__:CONN:{str(e)[:100]}"
                     break
-        return ""
+        return last_error or ""
 
     # ── CHAT PRINCIPAL ───────────────────────────────────────
     def chat(self, user_message: str, save_profile: bool = True) -> dict:
@@ -520,12 +544,45 @@ class PsychologistBot:
 
         messages = [{"role": "system", "content": system_prompt}] + self.conversation_history[-10:]
 
-        if not self.api_key:
-            return self._error_response("No hay una clave de API configurada. Ve a Configuración para agregar tu clave de Groq.")
+        if not self.api_key or len(self.api_key.strip()) < 10:
+            return self._error_response(
+                "⚙️ **Sin API Key configurada.** Ve a la sección '🔑 Configuración de API Key' "
+                "en el panel lateral e ingresa tu clave de Groq para activar la IA."
+            )
 
         raw = self._call_groq(messages)
-        if not raw:
-            return self._error_response("Lo siento, estoy teniendo dificultades de comunicación con mi servidor en este momento. Hablemos con calma.")
+
+        # Interpretar códigos de error detallados
+        if not raw or raw.startswith("__ERROR__"):
+            if raw:
+                parts = raw.split(":", 2)
+                code = parts[1] if len(parts) > 1 else "?"
+                if code == "NO_KEY":
+                    msg = "⚙️ **Sin API Key.** Configura tu clave de Groq en el panel lateral."
+                elif code == "401":
+                    msg = ("🔑 **API Key inválida o expirada.** "
+                           "Ve a [console.groq.com/keys](https://console.groq.com/keys), "
+                           "genera una nueva clave y actualízala en Configuración.")
+                elif code == "429":
+                    msg = ("⏳ **Límite de uso alcanzado en Groq.** "
+                           "Espera unos minutos y vuelve a intentarlo. "
+                           "Si es frecuente, considera actualizar tu plan en console.groq.com.")
+                elif code == "503":
+                    msg = ("🔧 **El servidor de Groq no está disponible en este momento.** "
+                           "Espera unos minutos y vuelve a intentarlo.")
+                elif code == "TIMEOUT":
+                    msg = ("⌛ **Tiempo de espera agotado.** "
+                           "La conexión con Groq tardó demasiado. Intenta de nuevo en un momento.")
+                elif code == "413":
+                    msg = ("📏 **El mensaje es demasiado largo.** "
+                           "Intenta con un mensaje más corto.")
+                else:
+                    msg = (f"⚠️ **Error de conexión con Groq (código {code}).** "
+                           "Verifica tu API key y conexión a internet.")
+            else:
+                msg = ("🔌 **No se pudo conectar con el servidor de IA.** "
+                       "Verifica que tu API key de Groq sea válida en el panel lateral.")
+            return self._error_response(msg)
 
         parsed = self._parse_response(raw, fragments)
 

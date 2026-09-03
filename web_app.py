@@ -29,7 +29,7 @@ from shared_utils import (
     PRIVACY_TERMS_TEXT,
     DISCLAIMER_EXPORT_TEXT
 )
-from emotional_test import QUESTIONS, analyze_test_results
+from emotional_test import QUESTIONS, OPEN_QUESTIONS, analyze_test_results, build_open_analysis_prompt
 
 def migrate_default_books():
     """Solo necesario en Windows (escritorio). En la nube, los libros ya están en el repo."""
@@ -87,11 +87,43 @@ def render_autoplay_audio(audio_bytes):
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="PsicoAI Pro", page_icon="🌿", layout="wide")
 
+def _resolve_api_key() -> str:
+    """
+    Lee la API key con esta prioridad:
+    1. st.secrets["GROQ_API_KEY"]  (Streamlit Cloud Secrets — más confiable)
+    2. os.environ["GROQ_API_KEY"]  (variable de entorno alternativa)
+    3. settings.json               (clave guardada manualmente por el usuario)
+    Retorna la primera que tenga al menos 10 caracteres.
+    """
+    # 1. Streamlit Secrets (Streamlit Cloud)
+    try:
+        secret_key = st.secrets.get("GROQ_API_KEY", "").strip()
+        if len(secret_key) >= 10:
+            return secret_key
+    except Exception:
+        pass
+
+    # 2. Variable de entorno
+    env_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if len(env_key) >= 10:
+        return env_key
+
+    # 3. settings.json guardado por el usuario
+    saved = load_saved_settings()
+    saved_key = saved.get("api_key", "").strip()
+    return saved_key
+
 # Inicializar sesión y configuraciones
 if "consent_granted" not in st.session_state:
     saved = load_saved_settings()
     st.session_state.consent_granted = saved.get("consent_granted", False)
-    st.session_state.api_key = saved.get("api_key", os.environ.get("GROQ_API_KEY", ""))
+    st.session_state.api_key = _resolve_api_key()
+
+# Siempre re-evaluar la key en cada render (por si se actualizó el secret)
+else:
+    resolved = _resolve_api_key()
+    if resolved and resolved != st.session_state.get("api_key", ""):
+        st.session_state.api_key = resolved
 
 if "bot" not in st.session_state:
     try:
@@ -108,6 +140,13 @@ if "bot" not in st.session_state:
         except Exception:
             st.error(f"Error critico al iniciar: {e}")
             st.stop()
+
+# Siempre sincronizar la api_key y la lista de modelos del bot con la sesión
+if "bot" in st.session_state:
+    if st.session_state.bot.api_key != st.session_state.api_key:
+        st.session_state.bot.api_key = st.session_state.api_key
+    # Forzar el uso de modelos actualizados en caso de que la instancia esté en caché en Streamlit Cloud
+    st.session_state.bot.models = ["groq/compound", "groq/compound-mini", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
 
 if "chat_history" not in st.session_state:
@@ -215,6 +254,24 @@ else:
     
     # 1. Selectores y Parámetros
     st.sidebar.markdown("---")
+
+    # ── INDICADOR DE ESTADO DE CONEXIÓN GROQ ─────────────────
+    api_key_actual = st.session_state.api_key or ""
+    if api_key_actual and len(api_key_actual.strip()) >= 10:
+        st.sidebar.markdown(
+            "<div style='background:#0d2010; border:1px solid #4cd137; border-radius:8px; "
+            "padding:8px 12px; margin-bottom:8px; font-size:13px; color:#4cd137;'>"
+            "✅ <strong>Groq API:</strong> Conectado</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.sidebar.markdown(
+            "<div style='background:#2a1010; border:1px solid #e84118; border-radius:8px; "
+            "padding:8px 12px; margin-bottom:8px; font-size:13px; color:#ff6b6b;'>"
+            "❌ <strong>Groq API:</strong> Sin clave configurada — el chat no funcionará.<br>"
+            "<span style='font-size:11px;'>👇 Configura tu clave abajo.</span></div>",
+            unsafe_allow_html=True
+        )
     
     # Enfoque Clínico
     approach_list = ["Terapia Cognitivo-Conductual (TCC)", "Logoterapia (Viktor Frankl)", "Terapia Humanista (Carl Rogers)", "Psicoanálisis (Sigmund Freud)"]
@@ -336,7 +393,8 @@ else:
 
     # 5. Reiniciar Sesión
     if st.sidebar.button("🔄 Nueva Sesión", type="primary", use_container_width=True):
-        st.session_state.bot.clear_session()
+        if "bot" in st.session_state:
+            del st.session_state["bot"]
         st.session_state.chat_history = [
             {
                 "role": "assistant",
@@ -350,6 +408,11 @@ else:
         st.session_state.current_citation = None
         st.session_state.suggested_options = ["Me siento ansioso/a", "Tengo problemas para dormir", "Quiero hablar de una relación", "No sé por dónde empezar"]
         st.session_state.play_audio_bytes = None
+        # Limpiar resultados del test al reiniciar
+        if "test_result" in st.session_state:
+            del st.session_state["test_result"]
+        if "test_open_analysis" in st.session_state:
+            del st.session_state["test_open_analysis"]
         st.rerun()
 
     # Nota de ayuda sobre traducción automática
@@ -396,14 +459,19 @@ else:
         st.markdown("<h3 style='color: #7fa99b;'>🧬 Diagnosticador de Patrones Inconscientes e Heridas de la Infancia</h3>", unsafe_allow_html=True)
         st.markdown("""
         <p style='color: #aaaaaa; font-size: 14px;'>
-        Este test explora los <strong>patrones emocionales programados en la infancia</strong> —heridas de abandono, 
-        rechazo, humillación, parentificación y lealtades familiares— que suelen operar de forma inconsciente 
-        en las relaciones y decisiones de la vida adulta. No evalúa tu estado de ánimo actual, sino tu 
+        Este test explora los <strong>patrones emocionales programados en la infancia</strong> —heridas de abandono,
+        rechazo, humillación, parentificación y lealtades familiares— que suelen operar de forma inconsciente
+        en las relaciones y decisiones de la vida adulta. No evalúa tu estado de ánimo actual, sino tu
         <strong>historia psicodinámica profunda</strong>.
         </p>
         """, unsafe_allow_html=True)
         st.caption("Responde con honestidad reflexiva. No hay respuestas correctas o incorrectas.")
         st.markdown("---")
+
+        # ── PARTE 1: Preguntas de Opción Múltiple ─────────────────
+        st.markdown("<h4 style='color: #d4c4b0;'>🔢 Parte 1 — Cuestionario de Valoración (15 preguntas)</h4>", unsafe_allow_html=True)
+        st.caption("Selecciona la opción que más te describe. No pienses demasiado — la primera respuesta suele ser la más honesta.")
+        st.markdown("")
 
         test_answers = {}
         for q in QUESTIONS:
@@ -420,24 +488,95 @@ else:
                     test_answers[q["id"]] = pts
             st.markdown("---")
 
-        if st.button("🔍 Analizar mi Patrón Profundo", type="primary", use_container_width=True):
-            resultado = analyze_test_results(test_answers)
-            st.session_state.test_result = resultado
-            patron_name = resultado["patron"]
-            if patron_name not in st.session_state.bot.profile.patrones_identificados:
-                st.session_state.bot.profile.patrones_identificados.append(patron_name)
-            nota_test = (
-                f"TEST PSICOANALÍTICO: Patrón principal '{patron_name}'. "
-                f"Patrón secundario: '{resultado.get('patron_secundario', 'N/A')}'. "
-                f"Enfoque sugerido: {resultado['enfoque_sugerido']}."
+        # ── PARTE 2: Preguntas Abiertas de Profundidad del Alma ───
+        st.markdown("<h4 style='color: #d4c4b0;'>💬 Parte 2 — Exploración Profunda del Alma (8 preguntas abiertas)</h4>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                    border: 1px solid #7b68ee; border-radius: 10px; padding: 14px; margin-bottom: 18px;'>
+            <p style='color: #c0b8ef; font-size: 13px; margin: 0;'>
+            💡 <strong>Estas preguntas son el corazón del diagnóstico.</strong> No hay límite de extensión —
+            cuanto más compartas de tu historia, más preciso y profundo será el análisis de la IA.
+            Puedes dejar en blanco las que no apliquen a tu historia personal.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        open_answers = {}
+        for oq in OPEN_QUESTIONS:
+            st.markdown(f"**🔹 {oq['titulo']}**")
+            st.markdown(f"<p style='color: #cccccc; font-size: 14px; margin: 4px 0 8px 0;'>{oq['pregunta']}</p>", unsafe_allow_html=True)
+            resp = st.text_area(
+                label=oq["titulo"],
+                placeholder=oq["placeholder"],
+                key=f"open_{oq['id']}",
+                height=120,
+                label_visibility="collapsed"
             )
-            st.session_state.bot.profile.agregar_nota(nota_test)
+            open_answers[oq["id"]] = resp
+            st.markdown("---")
+
+        if st.button("🔬 Analizar mi Historia Profunda", type="primary", use_container_width=True):
+            with st.spinner("Procesando tu historia... La IA está leyendo con profundidad clínica. Puede tomar unos segundos."):
+                # Análisis cuantitativo (opción múltiple)
+                resultado = analyze_test_results(test_answers)
+                st.session_state.test_result = resultado
+
+                # Guardar patrón en el perfil del paciente
+                patron_name = resultado["patron"]
+                if patron_name not in st.session_state.bot.profile.patrones_identificados:
+                    st.session_state.bot.profile.patrones_identificados.append(patron_name)
+                nota_test = (
+                    f"TEST PSICOANALÍTICO: Patrón principal '{patron_name}'. "
+                    f"Patrón secundario: '{resultado.get('patron_secundario', 'N/A')}'. "
+                    f"Enfoque sugerido: {resultado['enfoque_sugerido']}."
+                )
+                st.session_state.bot.profile.agregar_nota(nota_test)
+
+                # Análisis cualitativo por LLM (preguntas abiertas)
+                respuestas_con_contenido = {k: v for k, v in open_answers.items() if v and v.strip()}
+                analisis_llm = None
+                if respuestas_con_contenido:
+                    try:
+                        prompt_abierto = build_open_analysis_prompt(resultado, respuestas_con_contenido)
+                        if prompt_abierto:
+                            raw_resp = st.session_state.bot._call_groq(
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "Eres un psicólogo clínico experto en psicoanálisis y psicología transgeneracional. "
+                                            "Analiza con profundidad clínica y devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni bloques de código."
+                                        )
+                                    },
+                                    {"role": "user", "content": prompt_abierto}
+                                ]
+                            )
+                            if raw_resp:
+                                # Limpiar markdown/code-fences si el LLM los añadió
+                                raw_clean = raw_resp.strip()
+                                if raw_clean.startswith("```"):
+                                    raw_clean = re.sub(r"^```[a-z]*\n?", "", raw_clean)
+                                    raw_clean = re.sub(r"```$", "", raw_clean).strip()
+                                analisis_llm = json.loads(raw_clean)
+                                st.session_state.test_open_analysis = analisis_llm
+                                # Guardar temas para sesión en el perfil
+                                for tema in analisis_llm.get("temas_para_sesion", []):
+                                    st.session_state.bot.profile.agregar_nota(f"TEMA PARA SESIÓN (test): {tema}")
+                    except Exception as e:
+                        st.session_state.test_open_analysis = None
+                        print(f"Error en análisis LLM de preguntas abiertas: {e}")
+                else:
+                    st.session_state.test_open_analysis = None
+
             st.rerun()
 
+        # ── VISUALIZACIÓN DE RESULTADOS ───────────────────────────
         if "test_result" in st.session_state and st.session_state.test_result:
             res = st.session_state.test_result
             certeza = res.get("certeza", 85)
             icono = res.get("icono", "🎯")
+
+            st.markdown("<h4 style='color: #7fa99b; margin-top: 24px;'>📊 Resultados del Diagnóstico</h4>", unsafe_allow_html=True)
 
             # Resultado principal con % de certeza
             st.markdown(f"""
@@ -462,7 +601,7 @@ else:
                 ic2 = res.get("icono_secundario", "🔗")
                 st.info(f"{ic2} **Patrón Secundario Presente:** {res['patron_secundario']}")
 
-            # Manifestaciones
+            # Manifestaciones del patrón
             if res.get("manifestaciones"):
                 st.markdown("#### 🔎 Cómo suele manifestarse este patrón en tu vida:")
                 for m in res["manifestaciones"]:
@@ -470,7 +609,62 @@ else:
 
             st.markdown("---")
 
-            # Enfoque recomendado
+            # ── ANÁLISIS CUALITATIVO LLM (Preguntas Abiertas) ─────
+            open_analysis = st.session_state.get("test_open_analysis", None)
+            if open_analysis and isinstance(open_analysis, dict):
+                st.markdown("""
+                <div style='background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                            border: 1px solid #7b68ee; border-radius: 12px; padding: 20px; margin-bottom: 20px;'>
+                    <h4 style='color: #9b8fef; margin: 0 0 16px 0;'>
+                        🔬 Análisis Profundo de tu Historia Personal
+                    </h4>
+                """, unsafe_allow_html=True)
+
+                if open_analysis.get("confirmacion_patron"):
+                    st.markdown(
+                        f"<p style='color: #e0d7ff; margin-bottom: 14px;'>"
+                        f"<strong style='color:#9b8fef;'>📌 Confirmación del patrón:</strong><br>{open_analysis['confirmacion_patron']}</p>",
+                        unsafe_allow_html=True
+                    )
+
+                if open_analysis.get("dinamicas_familiares"):
+                    st.markdown("<p style='color: #9b8fef; font-weight: bold; margin: 10px 0 6px 0;'>🏠 Dinámicas familiares identificadas:</p>", unsafe_allow_html=True)
+                    for d in open_analysis["dinamicas_familiares"]:
+                        st.markdown(f"<p style='color: #cccccc; margin: 3px 0 3px 14px;'>▸ {d}</p>", unsafe_allow_html=True)
+
+                if open_analysis.get("temas_para_sesion"):
+                    st.markdown("<p style='color: #9b8fef; font-weight: bold; margin: 14px 0 6px 0;'>🛋️ Temas clave para explorar en sesión:</p>", unsafe_allow_html=True)
+                    for t in open_analysis["temas_para_sesion"]:
+                        st.markdown(f"<p style='color: #cccccc; margin: 3px 0 3px 14px;'>▸ {t}</p>", unsafe_allow_html=True)
+
+                if open_analysis.get("impacto_actual"):
+                    st.markdown(
+                        f"<p style='color: #aaaaaa; margin: 16px 0 0 0; font-style: italic;'>"
+                        f"<strong style='color:#9b8fef;'>💡 Impacto en tu vida actual:</strong><br>{open_analysis['impacto_actual']}</p>",
+                        unsafe_allow_html=True
+                    )
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Mensaje empático destacado
+                msg_emp = open_analysis.get("mensaje_empático") or open_analysis.get("mensaje_empatico", "")
+                if msg_emp:
+                    st.markdown(f"""
+                    <div style='background: linear-gradient(135deg, #0d2010 0%, #1a3320 100%);
+                                border: 1px solid #4cd137; border-radius: 10px; padding: 20px; margin-bottom: 20px;'>
+                        <p style='color: #7fa99b; font-size: 12px; margin: 0 0 10px 0;
+                                  text-transform: uppercase; letter-spacing: 1.5px; font-weight: bold;'>
+                            💚 Un mensaje para ti
+                        </p>
+                        <p style='color: #e0ffe0; font-size: 15px; line-height: 1.8; margin: 0; font-style: italic;'>
+                            "{msg_emp}"
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # Enfoque terapéutico recomendado
             st.markdown(f"""
             <div style='background: #1a2126; border: 1px solid #4a7a6a;
                         border-radius: 10px; padding: 16px; margin-bottom: 16px;'>
@@ -493,23 +687,27 @@ else:
             if st.button(f"⚙️ Ajustar sesión al enfoque: '{enfoque_bot}'", use_container_width=True):
                 st.session_state.bot.set_approach(enfoque_bot)
                 patron = res["patron"]
+                # Construir mensaje con contexto del análisis si existe
+                msg_ajuste = (
+                    f"He leído con atención los resultados de tu diagnóstico profundo. "
+                    f"Tu historia revela un patrón de: **{patron}**. "
+                )
+                if open_analysis and isinstance(open_analysis, dict) and open_analysis.get("confirmacion_patron"):
+                    msg_ajuste += f"{open_analysis['confirmacion_patron']} "
+                msg_ajuste += (
+                    f"He ajustado nuestra sesión al enfoque de **{enfoque_bot}** para acompañarte "
+                    f"desde ese lugar más profundo. ¿Quieres que empecemos explorando tu historia hoy?"
+                )
                 st.session_state.chat_history.append({
                     "role": "assistant",
-                    "content": (
-                        f"He revisado los resultados de tu test de patrones psicoanalíticos. "
-                        f"Según lo que exploraste, hay indicios de un patrón relacionado con: **{patron}**. "
-                        f"He ajustado nuestra sesión al enfoque de **{enfoque_bot}** para acompañarte "
-                        f"desde ese lugar más profundo. ¿Hay algún momento o recuerdo de tu historia "
-                        f"que quieras empezar a explorar hoy?"
-                    ),
+                    "content": msg_ajuste,
                     "timestamp": datetime.datetime.now().strftime("%H:%M")
                 })
                 st.success(f"✅ Sesión ajustada a: {enfoque_bot}. Regresa a la pestaña de chat.")
                 st.rerun()
 
 
-
-    # ──── PESTAÑA 2: RESUMEN CLÍNICO (EXPEDIENTE) ────
+    # ──── PESTAÑA 3: RESUMEN CLÍNICO (EXPEDIENTE) ────
     with tab_summary:
         st.markdown("<h3 style='color: #7fa99b;'>📋 Expediente Psicoeducativo del Caso</h3>", unsafe_allow_html=True)
         st.caption(f"Resumen analítico recopilado bajo el enfoque: **{st.session_state.bot.approach}**")
